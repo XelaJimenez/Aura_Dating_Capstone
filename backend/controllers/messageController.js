@@ -21,15 +21,19 @@ exports.sendMessage = async (req, res) => {
         }
 
         const { user1_id, user2_id } = matchCheck.rows[0];
-        const recipientId = parseInt(sender_id) === user1_id ? user2_id : user1_id;
+        const u1 = parseInt(user1_id, 10);
+        const u2 = parseInt(user2_id, 10);
+        const sid = parseInt(sender_id, 10);
+        const recipientId = sid === u1 ? u2 : u1;
 
-        const evaluation = evaluateMessage(parseInt(match_id), parseInt(sender_id), parseInt(recipientId), content);
+        const evaluation = await evaluateMessage(parseInt(match_id, 10), sid, recipientId, content);
 
         if (evaluation.decision === "block") {
             return res.status(403).json({
                 blocked:  true,
                 reason:   evaluation.reason,
                 cooldown: evaluation.cooldownApplied,
+                cooldown_until: evaluation.cooldownUntil || null,
             });
         }
 
@@ -37,7 +41,7 @@ exports.sendMessage = async (req, res) => {
             `INSERT INTO message (match_id, sender_id, content, sent_at)
              VALUES ($1, $2, $3, NOW())
              RETURNING message_id, match_id, sender_id, content, sent_at`,
-            [match_id, sender_id, content]
+            [match_id, sid, content]
         );
 
         const response = {
@@ -82,34 +86,5 @@ exports.getMessages = async (req, res) => {
     } catch (err) {
         console.error("getMessages error:", err.message);
         res.status(500).json({ error: "Failed to fetch messages." });
-    }
-};
-
-exports.sendDateRequest = async (req, res) => {
-    const { match_id, sender_id, venue_type, venue_name, proposed_datetime } = req.body;
-
-    if (!match_id || !sender_id || !venue_type || !proposed_datetime) {
-        return res.status(400).json({ error: "match_id, sender_id, venue_type, and proposed_datetime are required." });
-    }
-
-    try {
-        const scheduleResult = await pool.query(
-            `INSERT INTO date_scheduling (match_id, proposed_datetime, venue_type, venue_name, status, created_at)
-             VALUES ($1, $2, $3, $4, 'pending', NOW())
-             RETURNING schedule_id`,
-            [match_id, proposed_datetime, venue_type, venue_name || null]
-        );
-        const schedule_id = scheduleResult.rows[0].schedule_id;
-
-        const messageText = `📅 Date Request: How about ${venue_name || venue_type} on ${new Date(proposed_datetime).toLocaleString()}?`;
-        await pool.query(
-            `INSERT INTO message (match_id, sender_id, content, sent_at) VALUES ($1, $2, $3, NOW())`,
-            [match_id, sender_id, messageText]
-        );
-
-        res.status(201).json({ message: "Date request sent.", schedule_id });
-    } catch (err) {
-        console.error("sendDateRequest error:", err.message);
-        res.status(500).json({ error: "Failed to send date request." });
     }
 };

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<!--The frontend is intentionally thin it only renders data. All matching intelligence lives in the backend.-->
+<head>
+    <title>Aura Smart Matching Demo</title>
+
+    <style>
+        body {
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: mistyrose;
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            background: #7f1d1d;
+            color: white;
+            text-align: center;
+            padding: 25px;
+            font-size: 30px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .container {
+            padding: 30px;
+            max-width: 1000px;
+            margin: auto;
+        }
+
+        h2 {
+            color: #7f1d1d;
+            margin-top: 40px;
+        }
+
+        button {
+            padding: 12px 26px;
+            font-size: 16px;
+            border-radius: 10px;
+            border: none;
+            background: #7f1d1d;
+            color: white;
+            cursor: pointer;
+            margin: 10px 10px 20px 0;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            background: #991b1b;
+            transform: translateY(-1px);
+        }
+
+        .card {
+            background: white;
+            padding: 18px;
+            margin: 14px 0;
+            border-radius: 16px;
+            box-shadow: 0 6px 14px rgba(0,0,0,0.08);
+            border-left: 6px solid #e5e5e5;
+        }
+
+        .match-card {
+            border-left: 6px solid #7f1d1d;
+            background: #fff5f5;
+        }
+
+        .badge {
+            display: inline-block;
+            background: #7f1d1d;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 10px;
+            margin: 3px;
+            font-size: 12px;
+        }
+
+        .small {
+            font-size: 13px;
+            color: #555;
+            margin-top: 5px;
+        }
+
+        .no-results {
+            padding: 15px;
+            background: #fee2e2;
+            border-radius: 10px;
+            color: #7f1d1d;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+<header>Aura Smart Matching Demo</header>
+
+<div class="container">
+
+    <h2>All Candidates</h2>
+    <div id="allCandidates"></div>
+
+    <button onclick="showMatches()">Show Matches</button>
+    <button onclick="showRankedMatches()">Show Ranked Matches</button>
+
+    <h2>Results</h2>
+    <div id="results"></div>
+
+</div>
+
+<script>
+
+    const currentUser = {
+        user_id: 1,
+        interests: ["music","movies","travel"],
+        activity_level: "medium",
+        location_state: "Illinois"
+    };
+
+    let allCandidates = [];
+
+    function calculateAge(dob){
+        return new Date().getFullYear() - new Date(dob).getFullYear();
+    }
+
+    function candidateCard(c){
+        return `
+    <div class="card">
+        <strong>User ${c.user_id}</strong><br/>
+        Age: ${calculateAge(c.date_of_birth)}<br/>
+        Activity Level: ${c.activity_level}<br/>
+        Religion ID: ${c.religion_id}<br/>
+        Trust Score: ${c.trust_score}<br/>
+        Interests: ${c.interests.map(i=>`<span class="badge">${i}</span>`).join(' ')}
+    </div>`;
+    }
+
+    function matchCard(match){
+
+        const c = allCandidates.find(u => u.user_id === match.user_id);
+
+        const realAge = calculateAge(c.date_of_birth);
+
+        const shared = c.interests.filter(i =>
+            currentUser.interests.includes(i)
+        );
+
+        const interestText =
+            shared.length === 0
+                ? "No shared interests"
+                : shared.join(", ");
+
+        const activityMatch =
+            currentUser.activity_level === c.activity_level ? "Yes" : "No";
+
+        const distanceMatch =
+            currentUser.location_state === c.location_state
+                ? "Same State"
+                : "Nearby";
+
+        // Compatibility score
+        // Quick demo compatibility score
+        let demoScore = 0;
+
+        // Shared interests (max 40)
+        demoScore += shared.length * 15;
+
+        // Activity match (10)
+        if (activityMatch === "Yes") demoScore += 10;
+
+        // Same state bonus (10)
+        if (distanceMatch === "Same State") demoScore += 10;
+
+        // Trust bonus (max 20)
+        demoScore += Math.min(20, c.trust_score / 5);
+
+        const compatibility = Math.min(100, Math.round(demoScore));
+
+        return `
+    <div class="card match-card">
+        <strong>User ${c.user_id}</strong><br/>
+
+
+        Compatibility Score: <b>${match.score}</b>
+        Age: ${realAge} |
+        Activity Match: ${activityMatch} |
+        Distance: ${distanceMatch} |
+        Trust: ${c.trust_score}<br/>
+
+        Shared Interests:
+        ${shared.length === 0
+            ? "<i>None</i>"
+            : shared.map(i=>`<span class="badge">${i}</span>`).join(' ')
+        }
+
+        <div class="small">
+            ${shared.length}/${c.interests.length} shared
+        </div>
+    </div>`;
+    }
+
+    // Load candidates
+    fetch("http://localhost:4000/matches/all")
+        .then(res => res.json())
+        .then(data => {
+            allCandidates = data;
+            document.getElementById("allCandidates").innerHTML =
+                data.map(candidateCard).join("");
+        });
+
+    function showMatches(){
+        fetch("http://localhost:4000/matches/1?ranked=false")
+            .then(res => res.json())
+            .then(data => {
+
+                if(data.length === 0){
+                    document.getElementById("results").innerHTML =
+                        `<div class="no-results">
+                        No strong matches found.
+                    </div>`;
+                    return;
+                }
+
+                document.getElementById("results").innerHTML =
+                    data.map(matchCard).join("");
+            })
+            .catch(err => console.error("Error:", err));
+    }
+
+    function showRankedMatches(){
+        fetch("http://localhost:4000/matches/1?ranked=true")
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById("results").innerHTML =
+                    data.map(matchCard).join("");
+            })
+            .catch(err => console.error("Error:", err));
+    }
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,28 @@
+export function buildProfileSaveRequestBody(profile) {
+    return {
+        name: profile.name,
+        location: profile.location,
+        bio: profile.bio,
+        height: profile.height,
+        gender: profile.gender,
+        religion: profile.religion,
+        ethnicity: profile.ethnicity,
+        education: profile.education,
+        familyOriented: profile.familyOriented,
+        smoker: profile.smoker,
+        drinker: profile.drinker,
+        coffeeDrinker: profile.coffeeDrinker,
+        diet: profile.diet,
+        activityLevel: profile.activityLevel,
+        musicPref: profile.musicPref,
+        gamer: profile.gamer,
+        reader: profile.reader,
+        travel: profile.travel,
+        pets: profile.pets,
+        personality: profile.personality,
+        datingGoal: profile.datingGoal,
+        astrology: profile.astrology,
+        children: profile.children,
+        politicalStanding: profile.politicalStanding,
+    };
+}

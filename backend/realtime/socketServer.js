@@ -3,11 +3,21 @@ const { evaluateMessage } = require("../conversation/safetyEngine");
 const { verifyToken }     = require("../utils/jwtHelper");
 const pool                = require("../config/db");
 
-module.exports = function initSocketServer(httpServer) {
+/** pg / JWT may mix number vs string — normalize so match membership never fails. */
+function numId(v) {
+    const n = parseInt(String(v), 10);
+    return Number.isNaN(n) ? null : n;
+}
+
+/** Set by initSocketServer — used to broadcast messages created via HTTP (e.g. date flow). */
+let ioInstance = null;
+
+function initSocketServer(httpServer) {
+    // Reflect request Origin so Vite works from localhost OR 127.0.0.1 (different browser origins).
     const io = new Server(httpServer, {
         cors: {
-            origin:  "http://localhost:5173",
-            methods: ["GET", "POST"],
+            origin:      true,
+            methods:     ["GET", "POST"],
             credentials: true
         }
     });
@@ -19,7 +29,8 @@ module.exports = function initSocketServer(httpServer) {
         if (!token) return next(new Error("No token provided."));
         try {
             const decoded = verifyToken(token);
-            socket.userId = decoded.id;
+            socket.userId = numId(decoded.id);
+            if (socket.userId == null) return next(new Error("Invalid token."));
             next();
         } catch {
             next(new Error("Invalid token."));
@@ -30,22 +41,25 @@ module.exports = function initSocketServer(httpServer) {
         console.log(`[Socket] Connected: user ${socket.userId}`);
 
         socket.on("join_match", ({ match_id }) => {
-            if (!match_id) return;
-            socket.join(`match_${match_id}`);
+            const mid = numId(match_id);
+            if (mid == null) return;
+            socket.join(`match_${mid}`);
         });
 
         socket.on("leave_match", ({ match_id }) => {
-            if (!match_id) return;
-            socket.leave(`match_${match_id}`);
+            const mid = numId(match_id);
+            if (mid == null) return;
+            socket.leave(`match_${mid}`);
         });
 
         socket.on("send_message", async ({ match_id, content }) => {
-            if (!match_id || !content?.trim()) return;
+            const mid = numId(match_id);
+            if (mid == null || !content?.trim()) return;
 
             try {
                 const matchCheck = await pool.query(
                     "SELECT match_status, user1_id, user2_id FROM matches WHERE match_id = $1",
-                    [match_id]
+                    [mid]
                 );
 
                 if (matchCheck.rows.length === 0) {
@@ -56,38 +70,77 @@ module.exports = function initSocketServer(httpServer) {
                 }
 
                 const { user1_id, user2_id } = matchCheck.rows[0];
-                if (socket.userId !== user1_id && socket.userId !== user2_id) {
+                const u1 = numId(user1_id);
+                const u2 = numId(user2_id);
+                const uid = numId(socket.userId);
+                if (uid == null || u1 == null || u2 == null) {
+                    return socket.emit("error", { message: "Invalid match or user." });
+                }
+                if (uid !== u1 && uid !== u2) {
                     return socket.emit("error", { message: "You are not part of this match." });
                 }
 
-                const recipientId = socket.userId === user1_id ? user2_id : user1_id;
+                const recipientId = uid === u1 ? u2 : u1;
 
-                const evaluation = evaluateMessage(
-                    parseInt(match_id),
-                    socket.userId,
-                    recipientId,
-                    content.trim()
-                );
+                const evaluation = await evaluateMessage(mid, uid, recipientId, content.trim());
 
                 if (evaluation.decision === "block") {
                     return socket.emit("message_blocked", {
                         reason:   evaluation.reason,
-                        category: evaluation.category
+                        category: evaluation.category,
+                        sender_id: uid,
+                        cooldown_until: evaluation.cooldownUntil || null
                     });
                 }
 
                 if (evaluation.decision === "prompt") {
-                    socket.emit("safety_prompt", { reason: evaluation.reason });
+                    socket.emit("safety_prompt", {
+                        reason: evaluation.reason,
+                        sender_id: uid
+                    });
                 }
 
                 const result = await pool.query(
                     `INSERT INTO message (match_id, sender_id, content, sent_at)
                      VALUES ($1, $2, $3, NOW())
                      RETURNING message_id, match_id, sender_id, content, sent_at`,
-                    [match_id, socket.userId, content.trim()]
+                    [mid, uid, content.trim()]
                 );
 
-                io.to(`match_${match_id}`).emit("new_message", result.rows[0]);
+                const senderNameResult = await pool.query(
+                    `SELECT first_name, last_name FROM users WHERE user_id = $1 LIMIT 1`,
+                    [uid]
+                );
+                const senderName = senderNameResult.rows[0]
+                    ? `${senderNameResult.rows[0].first_name || ""} ${senderNameResult.rows[0].last_name || ""}`.trim()
+                    : "Your match";
+
+                await pool.query(
+                    `UPDATE notifications
+                     SET is_read = true
+                     WHERE user_id = $1
+                       AND type = 'new_message'
+                       AND is_read = false
+                       AND (payload->>'match_id')::int = $2`,
+                    [recipientId, mid]
+                );
+
+                await pool.query(
+                    `INSERT INTO notifications (user_id, type, payload, is_read, created_at)
+                     VALUES ($1, 'new_message', $2, false, NOW())`,
+                    [
+                        recipientId,
+                        JSON.stringify({
+                            match_id: mid,
+                            sender_id: uid,
+                            sender_name: senderName || "Your match",
+                            message_id: result.rows[0].message_id,
+                            preview: content.trim().slice(0, 140),
+                        }),
+                    ]
+                );
+
+                io.to(`match_${mid}`).emit("new_message", result.rows[0]);
 
             } catch (err) {
                 console.error("[Socket] send_message error:", err.message);
@@ -96,13 +149,15 @@ module.exports = function initSocketServer(httpServer) {
         });
 
         socket.on("typing", ({ match_id }) => {
-            if (!match_id) return;
-            socket.to(`match_${match_id}`).emit("user_typing", { user_id: socket.userId });
+            const mid = numId(match_id);
+            if (mid == null) return;
+            socket.to(`match_${mid}`).emit("user_typing", { user_id: socket.userId });
         });
 
         socket.on("stop_typing", ({ match_id }) => {
-            if (!match_id) return;
-            socket.to(`match_${match_id}`).emit("user_stop_typing", { user_id: socket.userId });
+            const mid = numId(match_id);
+            if (mid == null) return;
+            socket.to(`match_${mid}`).emit("user_stop_typing", { user_id: socket.userId });
         });
 
         socket.on("disconnect", () => {
@@ -110,5 +165,10 @@ module.exports = function initSocketServer(httpServer) {
         });
     });
 
+    ioInstance = io;
     return io;
-};
+}
+
+initSocketServer.getIO = () => ioInstance;
+
+module.exports = initSocketServer;

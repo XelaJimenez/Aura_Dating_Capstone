@@ -1,181 +1,142 @@
-// scoreMatch.js
-// Stage 2 of the matching pipeline — weighted compatibility scoring.
-// Evaluates 5 dimensions + trust bonus using integer IDs from the real DB schema.
-// Returns a totalScore (0–100) and a per-dimension breakdown.
-//
-// ─── SEED DATA ALIGNMENT ──────────────────────────────────────────────────
-// political_affil (IDs 1–6):
-//   1=Very Liberal, 2=Liberal, 3=Moderate, 4=Conservative, 5=Very Conservative, 6=Apolitical
-//
-// religion_type (IDs 1–10):
-//   1=Atheist, 2=Agnostic, 3=Buddhist, 4=Catholic, 5=Christian,
-//   6=Hindu, 7=Jewish, 8=Mormon, 9=Muslim, 10=Spiritual (non-religious)
-//
-// drinking (IDs 1–3): 1=Yes, 2=No, 3=Social
-// activity_level (IDs 1–3): 1=Low, 2=Medium, 3=High
-// travel (IDs 1–3): 1=Love it, 2=Occasionally, 3=Not really
-// gamer (IDs 1–3): 1=Yes, 2=No, 3=Casual
-// smoking (IDs 1–3): 1=Yes, 2=No, 3=Occasionally
-// personality_type (IDs 1–3): 1=Introvert, 2=Extrovert, 3=Ambivert
-// ─────────────────────────────────────────────────────────────────────────
+const AMBIVERT_ID = 3;
 
-const POLITICAL_APOLITICAL_ID = 6;
-const RELIGION_SPIRITUAL_ID   = 10;
-const AMBIVERT_ID             = 3;
-
-// ─── LIFESTYLE DIMENSION (25 pts) ──────────────────────────────────────────
-// activity_level: 1=Low, 2=Medium, 3=High — ordinal distance valid
-// drinking: 1=Yes, 2=No, 3=Social — partial credit for adjacent
-// smoking: 1=Yes, 2=No, 3=Occasionally — partial for occasional
-// diet_id / coffee_id: exact match only
-function scoreLifestyle(userA, userB) {
-    let score = 0;
-
-    // Activity level — ordinal distance (max 10)
-    if (userA.activity_level && userB.activity_level) {
-        const diff = Math.abs(userA.activity_level - userB.activity_level);
-        if (diff === 0) score += 10;
-        else if (diff === 1) score += 5;
-    }
-
-    // Drinking — partial credit for adjacent values (max 6)
-    if (userA.drinking_id && userB.drinking_id) {
-        if (userA.drinking_id === userB.drinking_id) score += 6;
-        else if (Math.abs(userA.drinking_id - userB.drinking_id) === 1) score += 3;
-    }
-
-    // Smoking — partial credit for occasional (max 4)
-    if (userA.smoking_id && userB.smoking_id) {
-        if (userA.smoking_id === userB.smoking_id) score += 4;
-        else if (userA.smoking_id === 3 || userB.smoking_id === 3) score += 1;
-    }
-
-    // Diet — exact match only (max 3)
-    if (userA.diet_id && userB.diet_id) {
-        if (userA.diet_id === userB.diet_id) score += 3;
-    }
-
-    // Coffee — exact match only (max 2)
-    if (userA.coffee_id && userB.coffee_id) {
-        if (userA.coffee_id === userB.coffee_id) score += 2;
-    }
-
-    return Math.min(25, score);
+function clamp01(x) {
+    if (x === null || x === undefined) return 0;
+    return Math.max(0, Math.min(1, x));
 }
 
-// ─── INTERESTS DIMENSION (25 pts) ──────────────────────────────────────────
-// music: exact match (8) — genre IDs, no ordinal meaning
-// travel: 1=Love it, 2=Occasionally, 3=Not really — ordinal distance valid (7)
-// pet_interest: exact match (3)
-// reader: exact match (3)
-// gamer: 1=Yes, 2=No, 3=Casual — partial for casual (4)
+function eq(a, b) {
+    if (a === null || a === undefined || b === null || b === undefined) return null;
+    return a === b ? 1 : 0;
+}
+
+function ordinal3(a, b) {
+    if (!a || !b) return null;
+    const diff = Math.abs(a - b);
+    if (diff === 0) return 1;
+    if (diff === 1) return 0.5;
+    return 0;
+}
+
+function personalityCompat(a, b) {
+    if (!a || !b) return null;
+    if (a === AMBIVERT_ID || b === AMBIVERT_ID) return 0.8;
+    if (a === b) return 1;
+    return 0.4;
+}
+
+function avg(parts) {
+    const nums = parts.filter((p) => p !== null);
+    if (nums.length === 0) return 0;
+    return nums.reduce((s, n) => s + n, 0) / nums.length;
+}
+
 function scoreInterests(userA, userB) {
-    let score = 0;
-
-    // Music genre match — exact only (max 8)
-    if (userA.music && userB.music) {
-        if (userA.music === userB.music) score += 8;
-    }
-
-    // Travel — ordinal distance (max 7)
-    if (userA.travel && userB.travel) {
-        if (userA.travel === userB.travel) score += 7;
-        else if (Math.abs(userA.travel - userB.travel) === 1) score += 3;
-    }
-
-    // Pet interest — exact match (max 3)
-    if (userA.pet_interest && userB.pet_interest) {
-        if (userA.pet_interest === userB.pet_interest) score += 3;
-    }
-
-    // Reader — exact match (max 3)
-    if (userA.reader && userB.reader) {
-        if (userA.reader === userB.reader) score += 3;
-    }
-
-    // Gamer — partial credit for casual (max 4)
-    if (userA.gamer && userB.gamer) {
-        if (userA.gamer === userB.gamer) score += 4;
-        else if (userA.gamer === 3 || userB.gamer === 3) score += 2;
-    }
-
-    return Math.min(25, score);
+    const music = eq(userA.music, userB.music);
+    const travel = ordinal3(userA.travel, userB.travel);
+    const pets = eq(userA.pet_interest, userB.pet_interest);
+    const reader = eq(userA.reader, userB.reader);
+    const gamer = eq(userA.gamer, userB.gamer);
+    return clamp01(avg([music, travel, pets, reader, gamer]));
 }
 
-// ─── PERSONALITY DIMENSION (15 pts) ────────────────────────────────────────
-// 1=Introvert, 2=Extrovert, 3=Ambivert
-// Ambivert is compatible with anyone (12 pts — close but not perfect)
-// Same type = perfect (15 pts)
-// Introvert + Extrovert = partial (6 pts — opposites can work)
+function scoreLifestyle(userA, userB) {
+    const activity = ordinal3(userA.activity_level, userB.activity_level);
+    const drinking = ordinal3(userA.drinking_id, userB.drinking_id);
+    const smoking = ordinal3(userA.smoking_id, userB.smoking_id);
+    const diet = eq(userA.diet_id, userB.diet_id);
+    const coffee = eq(userA.coffee_id, userB.coffee_id);
+    return clamp01(avg([activity, drinking, smoking, diet, coffee]));
+}
+
 function scorePersonality(userA, userB) {
-    if (!userA.personality_type || !userB.personality_type) return 0;
-    if (userA.personality_type === AMBIVERT_ID ||
-        userB.personality_type === AMBIVERT_ID) return 12;
-    if (userA.personality_type === userB.personality_type) return 15;
-    return 6; // Introvert + Extrovert — opposite but viable
+    return clamp01(personalityCompat(userA.personality_type, userB.personality_type));
 }
 
-// ─── VALUES DIMENSION (25 pts) ─────────────────────────────────────────────
-// religion: exact match (10), spiritual partial credit (4)
-// family_oriented: exact match (8)
-// political: ordinal distance with apolitical special case (7)
-function scoreValues(userA, userB) {
-    let score = 0;
-
-    // Religion (max 10)
-    if (userA.religion_id && userB.religion_id) {
-        if (userA.religion_id === userB.religion_id) {
-            score += 10;
-        } else if (userA.religion_id === RELIGION_SPIRITUAL_ID ||
-            userB.religion_id === RELIGION_SPIRITUAL_ID) {
-            score += 4; // Spiritual person is flexible
-        }
-    }
-
-    // Family oriented — exact match (max 8)
-    if (userA.family_oriented && userB.family_oriented) {
-        if (userA.family_oriented === userB.family_oriented) score += 8;
-    }
-
-    // Political alignment — ordinal with apolitical exception (max 7)
-    if (userA.political && userB.political) {
-        const a = userA.political;
-        const b = userB.political;
-        if (a === POLITICAL_APOLITICAL_ID || b === POLITICAL_APOLITICAL_ID) {
-            score += 3; // Apolitical person is neutral — partial credit
-        } else {
-            const diff = Math.abs(a - b);
-            if (diff === 0) score += 7;
-            else if (diff === 1) score += 4;
-            else if (diff === 2) score += 1;
-            // diff >= 3 = incompatible ends of spectrum, 0 pts
-        }
-    }
-
-    return Math.min(25, score);
+function scoreValuesAndRelationship(userA, userB) {
+    const religion = eq(userA.religion_id, userB.religion_id);
+    const familyOriented = eq(userA.family_oriented, userB.family_oriented);
+    const political = ordinal3(userA.political, userB.political);
+    const datingGoals = eq(userA.dating_goals, userB.dating_goals);
+    const children = eq(userA.children, userB.children);
+    const education = eq(userA.education_career_id, userB.education_career_id);
+    return clamp01(avg([religion, familyOriented, political, datingGoals, children, education]));
 }
 
-// ─── TRUST BONUS (10 pts) ──────────────────────────────────────────────────
-// internal_score from trust_score table (0–100) → scaled to 0–10
-// null score defaults to 5 (neutral — new user assumed trustworthy)
-function scoreTrust(candidate) {
-    if (candidate.trust_score === null || candidate.trust_score === undefined) return 5;
-    return Math.round((candidate.trust_score / 100) * 10);
+function buildCompatibilityReasons(userA, userB) {
+    const out = [];
+    const push = (s) => {
+        if (s && !out.includes(s)) out.push(s);
+    };
+
+    if (eq(userA.religion_id, userB.religion_id) === 1) push("Shared faith");
+    if (eq(userA.dating_goals, userB.dating_goals) === 1) push("Same dating goals");
+    if (eq(userA.children, userB.children) === 1) push("Aligned on kids");
+
+    const pol = ordinal3(userA.political, userB.political);
+    if (pol === 1) push("Political views line up");
+    else if (pol === 0.5) push("Close on politics");
+
+    if (eq(userA.family_oriented, userB.family_oriented) === 1) push("Same family mindset");
+    if (eq(userA.education_career_id, userB.education_career_id) === 1) push("Similar education path");
+
+    if (eq(userA.music, userB.music) === 1) push("Same music taste");
+
+    const tr = ordinal3(userA.travel, userB.travel);
+    if (tr === 1) push("Same travel energy");
+    else if (tr === 0.5) push("Similar travel style");
+
+    if (eq(userA.pet_interest, userB.pet_interest) === 1) push("Pet vibes in sync");
+    if (eq(userA.reader, userB.reader) === 1) push("Both into reading");
+    if (eq(userA.gamer, userB.gamer) === 1) push("Both into gaming");
+
+    const act = ordinal3(userA.activity_level, userB.activity_level);
+    if (act === 1) push("Similar activity level");
+    else if (act === 0.5) push("Close on activity level");
+
+    const drink = ordinal3(userA.drinking_id, userB.drinking_id);
+    if (drink === 1) push("Same drinking style");
+    else if (drink === 0.5) push("Close on drinking");
+
+    const smoke = ordinal3(userA.smoking_id, userB.smoking_id);
+    if (smoke === 1) push("Same take on smoking");
+    else if (smoke === 0.5) push("Close on smoking");
+
+    if (eq(userA.diet_id, userB.diet_id) === 1) push("Same diet");
+    if (eq(userA.coffee_id, userB.coffee_id) === 1) push("Coffee habits match");
+
+    const p = personalityCompat(userA.personality_type, userB.personality_type);
+    if (p >= 0.99) push("Same personality type");
+    else if (p >= 0.75) push("Personality vibe fits");
+
+    return out;
 }
 
-// ─── MAIN EXPORT ───────────────────────────────────────────────────────────
-// Returns totalScore (0–100) and full breakdown for transparency
 module.exports = function scoreMatch(userA, userB) {
-    const lifestyle   = scoreLifestyle(userA, userB);
-    const interests   = scoreInterests(userA, userB);
+    const interests = scoreInterests(userA, userB);
+    const lifestyle = scoreLifestyle(userA, userB);
     const personality = scorePersonality(userA, userB);
-    const values      = scoreValues(userA, userB);
-    const trust       = scoreTrust(userB);
+    const values = scoreValuesAndRelationship(userA, userB);
 
-    const totalScore = lifestyle + interests + personality + values + trust;
+    const weights = { interests: 0.25, lifestyle: 0.25, personality: 0.2, values: 0.3 };
+    const totalScore01 =
+        interests * weights.interests +
+        lifestyle * weights.lifestyle +
+        personality * weights.personality +
+        values * weights.values;
+
+    const totalScore = Math.round(clamp01(totalScore01) * 100);
+    const reasons = buildCompatibilityReasons(userA, userB);
 
     return {
         totalScore,
-        breakdown: { lifestyle, interests, personality, values, trust }
+        breakdown: {
+            interests: Math.round(interests * 100),
+            lifestyle: Math.round(lifestyle * 100),
+            personality: Math.round(personality * 100),
+            values: Math.round(values * 100),
+            weights,
+            reasons,
+        }
     };
 };

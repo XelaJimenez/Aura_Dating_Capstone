@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import AuraPlusHint from "../components/AuraPlusHint";
 import { useUser } from "../context/UserContext";
-
-const API = "http://localhost:4000";
+import { API_BASE_URL } from "../config/api";
 
 const VENUES = [
     { icon: "🍽️", name: "Restaurant",    suggestion: "Piccolo Sogno",         venue_type: "public",      lat: 41.8851, lng: -87.6445 },
@@ -83,6 +83,12 @@ function DatePlanner() {
     const [selectedSlot,  setSelectedSlot]  = useState(null);
     const [sent,  setSent]  = useState(false);
     const [error, setError] = useState("");
+    const [dateLimitAuraPlus, setDateLimitAuraPlus] = useState(false);
+
+    useEffect(() => {
+        setError("");
+        setDateLimitAuraPlus(false);
+    }, [selectedVenue, selectedSlot]);
 
     const buildProposedDatetime = (slot) => {
         const days   = { friday: 5, saturday: 6, sunday: 0 };
@@ -102,11 +108,12 @@ function DatePlanner() {
             return;
         }
         setError("");
+        setDateLimitAuraPlus(false);
 
         const proposed_datetime = buildProposedDatetime(selectedSlot);
 
         try {
-            const res = await fetch(`${API}/dates/request`, {
+            const res = await fetch(`${API_BASE_URL}/dates/request`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -125,6 +132,7 @@ function DatePlanner() {
 
             if (!res.ok) {
                 setError(data.error || "Failed to send date request.");
+                setDateLimitAuraPlus(data.upgrade_hint === "aura_plus");
                 return;
             }
         } catch (err) {
@@ -200,7 +208,8 @@ function DatePlanner() {
                         ))}
                     </div>
 
-                    {error && <p className="text-danger small mb-3">{error}</p>}
+                    {error && <p className="text-danger small mb-2">{error}</p>}
+                    {dateLimitAuraPlus && <AuraPlusHint className="mb-3 text-start" />}
 
                     {sent ? (
                         <div className="text-center text-success fw-bold">

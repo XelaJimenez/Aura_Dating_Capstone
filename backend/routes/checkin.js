@@ -1,12 +1,9 @@
-
 const express = require("express");
 const router = express.Router();
-const {submitCheckin, getCheckinHistory} = require("../controllers/checkinController");
+const { protect } = require("../middleware/authMiddleware");
+const { submitCheckin, getCheckinSummary } = require("../controllers/checkinController");
 
-
-router.post("/submit", submitCheckin);
-
-
-router.get("/history/:user_id", getCheckinHistory);
+router.post("/submit", protect, submitCheckin);
+router.get("/summary/:user_id", protect, getCheckinSummary);
 
 module.exports = router;

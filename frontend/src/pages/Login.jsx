@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useUser } from "../context/UserContext";
+import { API_BASE_URL } from "../config/api";
 
 function Login() {
     const navigate = useNavigate();
@@ -12,7 +13,6 @@ function Login() {
 
     const handleLogin = async (e) => {
         e.preventDefault();
-        console.log("🔥 OUR LOGIN RUNNING");  // ← add this line
         if (!email.includes("@")) { setError("Please enter a valid email."); return; }
         if (password.length < 6)  { setError("Password must be at least 6 characters."); return; }
 
@@ -20,7 +20,7 @@ function Login() {
         setLoading(true);
 
         try {
-            const res = await fetch("https://aura-backend-ysqh.onrender.com/auth/login", {
+            const res = await fetch(`${API_BASE_URL}/auth/login`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),
@@ -73,10 +73,14 @@ function Login() {
                     </button>
                 </form>
                 <div className="mt-3 small">
-                    <p className="mb-1 text-decoration-underline">Forgot Password?</p>
+                    <p className="mb-1">
+                        <Link to="/forgot-password" className="text-dark text-decoration-underline">
+                            Forgot password?
+                        </Link>
+                    </p>
                     <p>
                         Don't have account?{" "}
-                        <a href="/signup" className="text-dark fw-bold">Sign Up</a>
+                        <Link to="/signup" className="text-dark fw-bold">Sign Up</Link>
                     </p>
                 </div>
             </div>

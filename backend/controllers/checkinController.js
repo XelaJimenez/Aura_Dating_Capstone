@@ -1,9 +1,9 @@
-
 const pool = require("../config/db");
+const { applyTrustAfterCheckin, getTrustDisplayForUser } = require("../services/trustService");
 
 exports.submitCheckin = async (req, res) => {
+    const reviewer_user_id = parseInt(req.user.id, 10);
     const {
-        reviewer_user_id,
         reviewed_user_id,
         schedule_id,
         comfort_level,
@@ -11,150 +11,119 @@ exports.submitCheckin = async (req, res) => {
         boundaries_respected,
         felt_pressured,
         would_meet_again,
-        short_comment
+        short_comment,
     } = req.body;
 
+    const comfort = Number(comfort_level);
+    if (!reviewed_user_id || !schedule_id || !Number.isFinite(comfort) || comfort < 1 || comfort > 5) {
+        return res.status(400).json({ error: "reviewed_user_id, schedule_id, and comfort_level (1–5) are required." });
+    }
+    if (!["Yes", "No"].includes(felt_safe) || !["Yes", "No"].includes(boundaries_respected)) {
+        return res.status(400).json({ error: "felt_safe and boundaries_respected must be Yes or No." });
+    }
+    if (!["Yes", "No"].includes(felt_pressured) || !["Yes", "No"].includes(would_meet_again)) {
+        return res.status(400).json({ error: "felt_pressured and would_meet_again must be Yes or No." });
+    }
 
-    if (!reviewer_user_id || !reviewed_user_id) {
-        return res.status(400).json({error: "reviewer_user_id and reviewed_user_id are required."});
-    }
-    if (!comfort_level || comfort_level < 1 || comfort_level > 5) {
-        return res.status(400).json({error: "comfort_level must be between 1 and 5."});
-    }
-    if (!felt_pressured || !would_meet_again) {
-        return res.status(400).json({error: "Please fill in all required fields."});
-    }
+    const comment =
+        typeof short_comment === "string" ? short_comment.trim().slice(0, 500) : null;
 
     try {
-        await pool.query(
-            `INSERT INTO post_date_checkin
-             (schedule_id, reviewer_user_id, reviewed_user_id,
-              comfort_level, felt_safe, boundaries_respected,
-              felt_pressured, would_meet_again, short_comment, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
-            [
-                schedule_id || null,
-                reviewer_user_id,
-                reviewed_user_id,
-                comfort_level,
-                felt_safe === "Yes",
-                boundaries_respected === "Yes",
-                felt_pressured === "Yes",
-                would_meet_again,
-                short_comment || null
-            ]
+        const schedResult = await pool.query(
+            `SELECT ds.status, m.user1_id, m.user2_id
+             FROM date_scheduling ds
+             JOIN matches m ON m.match_id = ds.match_id
+             WHERE ds.schedule_id = $1`,
+            [schedule_id]
         );
-
-
-        let scoreChange = 0;
-
-        if (felt_safe === "No")
-            scoreChange -= 5;
-        if (boundaries_respected === "No")
-            scoreChange -= 4;
-        if (felt_pressured === "Yes")
-            scoreChange -= 3;
-        if (comfort_level <= 2)
-            scoreChange -= 3;
-        if (comfort_level >= 4)
-            scoreChange += 1;
-        if (felt_safe === "Yes")
-            scoreChange += 2;
-        if (boundaries_respected === "Yes")
-            scoreChange += 2;
-        if (would_meet_again === "Yes")
-            scoreChange += 2;
-        if (would_meet_again === "No")
-            scoreChange -= 2;
-
-
-
-        const trustResult = await pool.query(
-            "SELECT internal_score FROM trust_score WHERE user_id = $1",
-            [reviewed_user_id]
-        );
-
-        if (trustResult.rows.length === 0) {
-            return res.status(404).json({error: "Trust score not found for reviewed user."});
+        if (schedResult.rows.length === 0) {
+            return res.status(404).json({ error: "Schedule not found." });
+        }
+        const { user1_id, user2_id, status: schedStatus } = schedResult.rows[0];
+        if (schedStatus !== "approved") {
+            return res.status(409).json({ error: "This date is not approved." });
+        }
+        if (reviewer_user_id !== user1_id && reviewer_user_id !== user2_id) {
+            return res.status(403).json({ error: "You are not part of this date." });
+        }
+        const expectedOther = reviewer_user_id === user1_id ? user2_id : user1_id;
+        if (parseInt(reviewed_user_id, 10) !== expectedOther) {
+            return res.status(400).json({ error: "reviewed_user_id must be your date partner for this schedule." });
         }
 
-        const currentScore = trustResult.rows[0].internal_score;
-        const previousScore = currentScore;
+        const signals = {
+            comfort_level: comfort,
+            felt_safe: felt_safe === "Yes",
+            boundaries_respected: boundaries_respected === "Yes",
+            felt_pressured: felt_pressured === "Yes",
+        };
 
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+            const insertResult = await client.query(
+                `INSERT INTO post_date_checkin
+                 (schedule_id, reviewer_user_id, reviewed_user_id,
+                  comfort_level, felt_safe, boundaries_respected,
+                  felt_pressured, would_meet_again, short_comment, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                 RETURNING checkin_id`,
+                [
+                    schedule_id,
+                    reviewer_user_id,
+                    reviewed_user_id,
+                    comfort,
+                    signals.felt_safe,
+                    signals.boundaries_respected,
+                    signals.felt_pressured,
+                    would_meet_again,
+                    comment || null,
+                ]
+            );
+            const checkinId = insertResult.rows[0].checkin_id;
+            const trustResult = await applyTrustAfterCheckin(client, reviewed_user_id, checkinId, signals);
+            await client.query("COMMIT");
 
-        const newScore = Math.min(100, Math.max(0, currentScore + scoreChange));
-
-
-        await pool.query(
-            "UPDATE trust_score SET internal_score = $1, last_updated = NOW() WHERE user_id = $2",
-            [newScore, reviewed_user_id]
-        );
-
-
-        await pool.query(
-            `INSERT INTO trust_score_history
-                 (user_id, score_before, score_after, change_reason, created_at)
-             VALUES ($1, $2, $3, $4, NOW())`,
-            [
-                reviewed_user_id,
-                previousScore,
-                newScore,
-                `Post date checkin submitted by user ${reviewer_user_id}`
-            ]
-        );
-
-        const dateCount = await pool.query(
-            `SELECT COUNT(*) FROM post_date_checkin 
-            WHERE reviewed_user_id = $1`,
-            [reviewed_user_id]
-        );
-
-        const totalDates = parseInt(dateCount.rows[0].count);
-
-        const starRating = totalDates < 3 ? null : Math.round(newScore / 20);
-
-        const label =
-            totalDates < 3 ? "New User" :
-                newScore >= 80 ? "Highly Trusted" :
-                    newScore >= 60 ? "Trusted" :
-                        newScore >= 40 ? "Neutral" :
-                            newScore >= 20 ? "Limited Trust" : "Restricted";
-
-        res.status(201).json({
-            message: "Checkin submitted successfully.",
-            trust_score: {
-                previous: previousScore,
-                updated: newScore,
-                change: scoreChange,
-                starRating: starRating,
-                label: label
+            const display = await getTrustDisplayForUser(reviewed_user_id);
+            res.status(201).json({
+                message: "Check-in submitted.",
+                trust: trustResult,
+                reviewed: display,
+            });
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            if (err.code === "23505") {
+                return res.status(409).json({ error: "You already submitted a check-in for this date." });
             }
-        });
-
+            throw err;
+        } finally {
+            client.release();
+        }
     } catch (err) {
         console.error("submitCheckin error:", err.message);
-        res.status(500).json({error: "Failed to submit survey check-in."});
+        res.status(500).json({ error: "Failed to submit check-in." });
     }
 };
 
-
-exports.getCheckinHistory = async (req, res) => {
-    const {user_id} = req.params;
+/** No reviewer identities (reviewer anonymity). */
+exports.getCheckinSummary = async (req, res) => {
+    const targetId = parseInt(req.params.user_id, 10);
+    const selfId = parseInt(req.user.id, 10);
+    if (targetId !== selfId) {
+        return res.status(403).json({ error: "You can only view your own check-in summary." });
+    }
 
     try {
         const result = await pool.query(
-            `SELECT pdc.*,
-                    u.first_name as reviewer_name
-             FROM post_date_checkin pdc
-                      JOIN users u ON u.user_id = pdc.reviewer_user_id
-             WHERE pdc.reviewed_user_id = $1
-             ORDER BY pdc.created_at DESC`,
-            [user_id]
+            `SELECT COUNT(*)::int AS total,
+                    COUNT(DISTINCT schedule_id)::int AS dates_with_feedback
+             FROM post_date_checkin
+             WHERE reviewed_user_id = $1`,
+            [targetId]
         );
-
-        res.json({checkins: result.rows});
+        res.json({ summary: result.rows[0] });
     } catch (err) {
-        console.error("getCheckinHistory error:", err.message);
-        res.status(500).json({error: "Failed to fetch checkin history."});
+        console.error("getCheckinSummary error:", err.message);
+        res.status(500).json({ error: "Failed to fetch summary." });
     }
 };

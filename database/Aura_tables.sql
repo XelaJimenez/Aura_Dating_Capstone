@@ -272,7 +272,8 @@ CREATE TABLE "conversation_safety_state" (
   "repeat_request_count" integer DEFAULT 0,
   "resistance_count" integer DEFAULT 0,
   "escalation_level" varchar,
-  "last_updated" timestamptz
+  "last_updated" timestamptz,
+  "engine_snapshot" jsonb
 );
 
 CREATE TABLE "trust_score" (

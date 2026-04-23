@@ -1,6 +1,46 @@
 import Navbar from "../components/Navbar";
-import StarRating from "../components/StarRating";
+import PartnerGenderPrefs from "../components/PartnerGenderPrefs";
+import ShieldRating from "../components/ShieldRating";
 import { useUser } from "../context/UserContext";
+import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
+import { API_BASE_URL } from "../config/api";
+import { buildProfileSaveRequestBody } from "../utils/profileSaveBody";
+
+function initialsFromName(name) {
+    const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+    });
+}
+
+function nameForInitials(profile, currentUser) {
+    const n = profile.name?.trim();
+    if (n) return n;
+    const fromContext = [currentUser?.first_name, currentUser?.last_name].filter(Boolean).join(" ").trim();
+    if (fromContext) return fromContext;
+    try {
+        const raw = localStorage.getItem("user");
+        if (!raw) return "";
+        const u = JSON.parse(raw);
+        const fromLs = [u.first_name, u.last_name].filter(Boolean).join(" ").trim();
+        if (fromLs) return fromLs;
+        const em = u.email;
+        if (typeof em === "string" && em.includes("@")) return em.split("@")[0] || "";
+    } catch {
+        return "";
+    }
+    return "";
+}
 
 function ToggleGroup({ options, value, onChange }) {
     return (
@@ -20,11 +60,47 @@ function ToggleGroup({ options, value, onChange }) {
 }
 
 function Profile() {
-    const { profile, setProfile, preferences, setPreferences, currentUser } = useUser();
+    const {
+        profile,
+        setProfile,
+        preferences,
+        setPreferences,
+        currentUser,
+        token,
+        refreshMatches,
+        accountProfileLoaded,
+        syncSessionFromAuthUser,
+    } = useUser();
+    const [saveError, setSaveError] = useState(null);
+    const [saveSuccess, setSaveSuccess] = useState(false);
+    const [appealEligible, setAppealEligible] = useState(null);
+    const pendingPhotoFileRef = useRef(null);
+    const lastBlobUrlRef = useRef(null);
+
     const updateProfile = (field, value) => setProfile((prev) => ({ ...prev, [field]: value }));
     const updatePref = (field, value) => setPreferences((prev) => ({ ...prev, [field]: value }));
 
-    const starRating = 3;
+    const td = profile.trustDisplay;
+    const num = (v) => {
+        if (v == null || v === "") return null;
+        const x = Number(v);
+        return Number.isFinite(x) ? x : null;
+    };
+    const internalToShield = (internalScore) => {
+        const n = num(internalScore);
+        if (n == null) return null;
+        return Math.max(1, Math.min(5, Math.round(n / 20)));
+    };
+    const fromTrustDisplay = num(td?.shield_count);
+    const shieldCount =
+        fromTrustDisplay != null
+            ? Math.max(1, Math.min(5, Math.round(fromTrustDisplay)))
+            : internalToShield(profile.trustScore);
+    const trustLabel = shieldCount == null
+        ? "No score"
+        : td?.label && td.label !== "New User"
+            ? td.label
+            : "";
 
     const inchesToDisplay = (inches) => {
         const ft = Math.floor(inches / 12);
@@ -32,30 +108,149 @@ function Profile() {
         return `${ft}'${inch}"`;
     };
 
-    const getInitials = () => {
-        if (currentUser) {
-            const first = (currentUser.first_name || "").charAt(0).toUpperCase();
-            const last  = (currentUser.last_name  || "").charAt(0).toUpperCase();
-            return first + last;
+    const pic = profile.profilePic;
+    const showPhoto = Boolean(
+        pic && (pic.startsWith("http") || pic.startsWith("blob:") || pic.startsWith("data:") || pic.startsWith("/"))
+    );
+
+    const displayNameForInitials = nameForInitials(profile, currentUser);
+
+    const handleImageChange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (lastBlobUrlRef.current) {
+            URL.revokeObjectURL(lastBlobUrlRef.current);
+            lastBlobUrlRef.current = null;
         }
-        return "U";
+        pendingPhotoFileRef.current = file;
+        const url = URL.createObjectURL(file);
+        lastBlobUrlRef.current = url;
+        updateProfile("profilePic", url);
+        setSaveError(null);
     };
 
-    const fallbackAvatar = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300' viewBox='0 0 300 300'%3E%3Crect width='300' height='300' rx='150' fill='%23a8001c'/%3E%3Ccircle cx='150' cy='118' r='52' fill='%23f2d0d5'/%3E%3Cellipse cx='150' cy='245' rx='82' ry='62' fill='%23f2d0d5'/%3E%3Ctext x='150' y='130' text-anchor='middle' dominant-baseline='middle' fill='white' font-size='52' font-family='Arial,sans-serif' font-weight='700'%3E${getInitials()}%3C/text%3E%3C/svg%3E`;
+    useEffect(() => () => {
+        if (lastBlobUrlRef.current) URL.revokeObjectURL(lastBlobUrlRef.current);
+    }, []);
 
-    const profilePic = profile.profilePic || fallbackAvatar;
+    useEffect(() => {
+        if (!token) return;
+        let cancelled = false;
+        fetch(`${API_BASE_URL}/appeals/eligibility`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((r) => r.json())
+            .then((data) => {
+                if (!cancelled) setAppealEligible(data.eligible === true);
+            })
+            .catch(() => {
+                if (!cancelled) setAppealEligible(false);
+            });
+        return () => { cancelled = true; };
+    }, [token]);
 
-    const handleImageChange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            const url = URL.createObjectURL(file);
-            updateProfile("profilePic", url);
+    const handleSave = async () => {
+        setSaveError(null);
+        setSaveSuccess(false);
+
+        if (!currentUser || !token) {
+            setSaveError("You must be logged in to save.");
+            return;
+        }
+
+        const locVal = profile.location || "";
+        if (locVal.trim() && !locVal.includes(",")) {
+            setSaveError("Please enter your location as City, State (e.g. Chicago, IL).");
+            return;
+        }
+
+        try {
+            if (pendingPhotoFileRef.current) {
+                const dataUrl = await readFileAsDataUrl(pendingPhotoFileRef.current);
+                const photoRes = await fetch(`${API_BASE_URL}/profile/photo`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ photo_url: dataUrl }),
+                });
+                const photoData = await photoRes.json();
+                if (!photoRes.ok) {
+                    setSaveError(photoData.error || "Failed to save photo.");
+                    return;
+                }
+                const savedUrl = photoData.photo_url;
+                if (lastBlobUrlRef.current) {
+                    URL.revokeObjectURL(lastBlobUrlRef.current);
+                    lastBlobUrlRef.current = null;
+                }
+                pendingPhotoFileRef.current = null;
+                updateProfile("profilePic", savedUrl);
+            }
+
+            const [profileRes, prefRes] = await Promise.all([
+                fetch(`${API_BASE_URL}/profile/save`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify(buildProfileSaveRequestBody(profile)),
+                }),
+                fetch(`${API_BASE_URL}/profile/preferences`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({
+                        genderPref:     preferences.genderPref,
+                        genderPrefs:    preferences.genderPrefs ?? [],
+                        minAge:         preferences.minAge,
+                        maxAge:         preferences.maxAge,
+                        minHeight:      preferences.minHeight,
+                        maxHeight:      preferences.maxHeight,
+                        religionPref:   preferences.religionPref,
+                        ethnicityPref:  preferences.ethnicityPref,
+                        politicalPref:  preferences.politicalPref,
+                        childrenPref:   preferences.childrenPref,
+                        datingGoalPref: preferences.datingGoalPref,
+                        activityPref:   preferences.activityPref,
+                        familyOrientedPref: preferences.familyOrientedPref,
+                    }),
+                }),
+            ]);
+
+            const [profileData, prefData] = await Promise.all([
+                profileRes.json().catch(() => ({})),
+                prefRes.json().catch(() => ({})),
+            ]);
+            if (!profileRes.ok) {
+                setSaveError(profileData.error || "Failed to save profile.");
+                return;
+            }
+            if (!prefRes.ok) {
+                setSaveError(prefData.error || "Failed to save preferences.");
+                return;
+            }
+
+            setSaveSuccess(true);
+            setTimeout(() => setSaveSuccess(false), 3000);
+            await refreshMatches();
+            const meRes = await fetch(`${API_BASE_URL}/auth/me`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (meRes.ok) {
+                const meData = await meRes.json();
+                if (meData?.user) syncSessionFromAuthUser(meData.user);
+            }
+        } catch {
+            setSaveError("Could not connect to server. Please try again.");
         }
     };
 
-    const handleSave = () => {
-        alert("Profile saved successfully!");
-    };
+    if (token && !accountProfileLoaded) {
+        return (
+            <>
+                <Navbar />
+                <div className="container d-flex justify-content-center align-items-center text-center faded-background min-vh-100 min-vw-100">
+                    <div className="profile-loading">Loading profile…</div>
+                </div>
+            </>
+        );
+    }
 
     return (
         <>
@@ -63,28 +258,77 @@ function Profile() {
             <div className="container d-flex justify-content-center align-items-center text-center faded-background min-vh-100 min-vw-100">
                 <div className="login-card p-4 text-center mb-4">
 
-                    <div className="profile-photo-section">
-                        <img
-                            src={profilePic}
-                            className="profile-photo mb-2 mt-3"
-                            alt="profile"
+                    <div className="bg-white profile-photo-wrap profile-polaroid">
+                        <div
+                            className="profile-avatar-shell"
                             onClick={() => document.getElementById("picUpload").click()}
-                        />
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    document.getElementById("picUpload").click();
+                                }
+                            }}
+                            role="button"
+                            tabIndex={0}
+                        >
+                            {showPhoto ? (
+                                <img
+                                    src={pic}
+                                    className="profile-pic"
+                                    alt=""
+                                />
+                            ) : (
+                                <div className="profile-avatar-initials" aria-hidden="true">
+                                    {initialsFromName(displayNameForInitials)}
+                                </div>
+                            )}
+                        </div>
                         <input
                             id="picUpload"
                             type="file"
                             accept="image/*"
-                            className="d-none"
+                            className="profile-pic-input"
                             onChange={handleImageChange}
                         />
-                        <div
-                            className="text-muted small mb-2 bi-camera profile-photo-label"
-                            onClick={() => document.getElementById("picUpload").click()}
-                        >
-                            Change Photo
+                        <div className="text-muted small mb-2 bi-camera profile-change-photo" onClick={() => document.getElementById("picUpload").click()}>
+                            -Change Photo
                         </div>
-                        <div className="pb-2">
-                            <StarRating rating={starRating} />
+                        <div className="pb-2 text-center profile-trust-panel">
+                            <div className="small text-white-50 mb-1">Safety trust</div>
+                            <ShieldRating rating={shieldCount} />
+                            <div className="small text-white mt-1 fw-semibold">
+                                {trustLabel}
+                            </div>
+                            {td?.dates_reviewed != null && (
+                                <div className="small text-white-50">
+                                    {td.dates_reviewed} date{td.dates_reviewed === 1 ? "" : "s"} reviewed
+                                </div>
+                            )}
+                            {td?.show_numeric && td?.public_trust_rating != null && (
+                                <div className="small text-white-50">
+                                    {td.public_trust_rating.toFixed(1)} · Safety-based rating
+                                </div>
+                            )}
+                            {td?.show_numeric && (
+                                <div className="small text-white-50 mt-1 profile-trust-footnote">
+                                    Shields reflect a rolling average; one difficult date may not change the count.
+                                </div>
+                            )}
+                        </div>
+                        <div className="profile-polaroid-title">Profile</div>
+                    </div>
+
+                    <div className="profile-appeal-card mt-3 mb-3">
+                        <div className="small text-muted">
+                            If a date check-in affects your score, we&apos;ll notify you in the bell.
+                        </div>
+                        <div className="mt-2">
+                            <Link to="/appeals" className="btn btn-outline-danger btn-sm">
+                                Submit trust appeal
+                            </Link>
+                        </div>
+                        <div className="small text-muted mt-2">
+                            {appealEligible === true ? "You are currently eligible to submit an appeal." : "Appeals are available when eligible."}
                         </div>
                     </div>
 
@@ -96,8 +340,13 @@ function Profile() {
                     </div>
 
                     <div className="mb-3 text-start">
-                        <label>Location</label>
-                        <input className="form-control" value={profile.location} onChange={(e) => updateProfile("location", e.target.value)} />
+                        <label>Location <span className="text-muted location-hint">(City, State — e.g. Chicago, IL)</span></label>
+                        <input
+                            className="form-control"
+                            value={profile.location}
+                            placeholder="Chicago, IL"
+                            onChange={(e) => updateProfile("location", e.target.value)}
+                        />
                     </div>
 
                     <div className="mb-4 text-start">
@@ -171,7 +420,7 @@ function Profile() {
 
                     <div className="mb-4 text-start">
                         <label>Family-Oriented?</label>
-                        <ToggleGroup options={["Yes", "No"]} value={profile.familyOriented} onChange={(v) => updateProfile("familyOriented", v)} />
+                        <ToggleGroup options={["Yes", "No", "No preference"]} value={profile.familyOriented} onChange={(v) => updateProfile("familyOriented", v)} />
                     </div>
 
                     <h5 className="section-title">Lifestyle &amp; Habits</h5>
@@ -287,7 +536,7 @@ function Profile() {
 
                     <div className="mb-3 text-start">
                         <label>Do you have or want children?</label>
-                        <ToggleGroup options={["Have kids", "Want kids", "Don't want kids", "Open"]} value={profile.children} onChange={(v) => updateProfile("children", v)} />
+                        <ToggleGroup options={["Have kids", "Want kids", "Don't want kids", "Open", "No preference"]} value={profile.children} onChange={(v) => updateProfile("children", v)} />
                     </div>
 
                     <div className="mb-4 text-start">
@@ -312,13 +561,20 @@ function Profile() {
                     <h5 className="section-title">Partner Preferences</h5>
 
                     <div className="mb-3 text-start">
-                        <label>Gender Preference</label>
-                        <ToggleGroup options={["Male", "Female", "Non-binary", "No preference"]} value={preferences.genderPref} onChange={(v) => updatePref("genderPref", v)} />
+                        <label>Partner gender (pick one or more types, or Open to all genders)</label>
+                        <PartnerGenderPrefs
+                            genderPrefs={preferences.genderPrefs}
+                            onChange={(next) => setPreferences((prev) => ({
+                                ...prev,
+                                genderPrefs: next,
+                                genderPref: next.length === 0 ? "No preference" : next.length === 1 ? next[0] : "Multiple",
+                            }))}
+                        />
                     </div>
 
                     <div className="mb-3 text-start">
                         <label>Age Range: {preferences.minAge} – {preferences.maxAge}</label>
-                        <div className="dual-range-wrap">
+                        <div className="range-wrap">
                             <input type="range" min="18" max="100" value={preferences.minAge}
                                    onChange={(e) => updatePref("minAge", Math.min(Number(e.target.value), preferences.maxAge - 1))}
                                    className="dual-range dual-range-min" />
@@ -330,7 +586,7 @@ function Profile() {
 
                     <div className="mb-3 text-start">
                         <label>Height Range: {inchesToDisplay(preferences.minHeight)} – {inchesToDisplay(preferences.maxHeight)}</label>
-                        <div className="dual-range-wrap">
+                        <div className="range-wrap">
                             <input type="range" min="48" max="96" value={preferences.minHeight}
                                    onChange={(e) => updatePref("minHeight", Math.min(Number(e.target.value), preferences.maxHeight - 1))}
                                    className="dual-range dual-range-min" />
@@ -343,7 +599,7 @@ function Profile() {
                     <div className="mb-3 text-start">
                         <label>Religion Preference</label>
                         <select className="form-select" value={preferences.religionPref} onChange={(e) => updatePref("religionPref", e.target.value)}>
-                            <option value="">No preference</option>
+                            <option value="">Open to all religions</option>
                             <option>Atheist</option>
                             <option>Agnostic</option>
                             <option>Buddhist</option>
@@ -360,7 +616,7 @@ function Profile() {
                     <div className="mb-3 text-start">
                         <label>Ethnicity Preference</label>
                         <select className="form-select" value={preferences.ethnicityPref} onChange={(e) => updatePref("ethnicityPref", e.target.value)}>
-                            <option value="">No preference</option>
+                            <option value="">Open to all ethnicities</option>
                             <option>Asian</option>
                             <option>Black / African American</option>
                             <option>Hispanic / Latino</option>
@@ -375,7 +631,7 @@ function Profile() {
                     <div className="mb-3 text-start">
                         <label>Political Preference</label>
                         <select className="form-select" value={preferences.politicalPref} onChange={(e) => updatePref("politicalPref", e.target.value)}>
-                            <option value="">No preference</option>
+                            <option value="">Open to all political leanings</option>
                             <option>Very Liberal</option>
                             <option>Liberal</option>
                             <option>Moderate</option>
@@ -387,7 +643,7 @@ function Profile() {
 
                     <div className="mb-3 text-start">
                         <label>Children Preference</label>
-                        <ToggleGroup options={["Has kids", "Wants kids", "No kids", "No preference"]} value={preferences.childrenPref} onChange={(v) => updatePref("childrenPref", v)} />
+                        <ToggleGroup options={["Have kids", "Want kids", "Don't want kids", "Open", "No preference"]} value={preferences.childrenPref} onChange={(v) => updatePref("childrenPref", v)} />
                     </div>
 
                     <div className="mb-3 text-start">
@@ -395,15 +651,32 @@ function Profile() {
                         <ToggleGroup options={["Low", "Medium", "High", "No preference"]} value={preferences.activityPref} onChange={(v) => updatePref("activityPref", v)} />
                     </div>
 
+                    <div className="mb-3 text-start">
+                        <label>Family-oriented preference</label>
+                        <ToggleGroup options={["Yes", "No", "No preference"]} value={preferences.familyOrientedPref} onChange={(v) => updatePref("familyOrientedPref", v)} />
+                    </div>
+
                     <div className="mb-4 text-start">
                         <label>Dating Goals Preference</label>
                         <ToggleGroup options={["Casual", "Serious", "Long-term", "No preference"]} value={preferences.datingGoalPref} onChange={(v) => updatePref("datingGoalPref", v)} />
                     </div>
 
+                    {saveError && (
+                        <div className="alert alert-danger py-2 text-start alert-sm">
+                            {saveError}
+                        </div>
+                    )}
+
+                    {saveSuccess && (
+                        <div className="alert alert-success py-2 text-start alert-sm">
+                            Profile saved successfully!
+                        </div>
+                    )}
+
                     <div>
-                        <button className="btn btn-danger me-2 mb-2">
+                        <Link to="/aura-plus" className="btn btn-danger me-2 mb-2">
                             Get Aura +
-                        </button>
+                        </Link>
                     </div>
                     <div>
                         <button className="btn btn-outline-danger me-2" onClick={handleSave}>

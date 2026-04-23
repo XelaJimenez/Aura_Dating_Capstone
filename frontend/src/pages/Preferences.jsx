@@ -1,6 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
 import { useState } from "react";
+import { API_BASE_URL } from "../config/api";
+import PartnerGenderPrefs from "../components/PartnerGenderPrefs";
+import { buildProfileSaveRequestBody } from "../utils/profileSaveBody";
 
 function ToggleGroup({ options, value, onChange }) {
     return (
@@ -21,7 +24,7 @@ function ToggleGroup({ options, value, onChange }) {
 
 function Preferences() {
     const navigate = useNavigate();
-    const { preferences, setPreferences } = useUser();
+    const { preferences, setPreferences, profile, token, refreshMatches, refreshAuthProfile, currentUser } = useUser();
     const update = (field, value) => setPreferences((prev) => ({ ...prev, [field]: value }));
 
     const inchesToDisplay = (inches) => {
@@ -32,23 +35,56 @@ function Preferences() {
 
     const [error, setError] = useState("");
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!preferences.genderPref) {
-            setError("Please select a gender preference.");
-            return;
-        }
         setError("");
 
-        // BACKEND DISABLED
-        /*
-        fetch("/api/save-preferences", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(preferences)
-        });
-        */
-        navigate("/matching");
+        if (!token || !currentUser?.user_id) {
+            setError("You must be logged in to save preferences.");
+            return;
+        }
+
+        try {
+            const profileRes = await fetch(`${API_BASE_URL}/profile/save`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify(buildProfileSaveRequestBody(profile)),
+            });
+            const profileData = await profileRes.json().catch(() => ({}));
+            if (!profileRes.ok) {
+                setError(profileData.error || "Failed to save profile.");
+                return;
+            }
+            const prefRes = await fetch(`${API_BASE_URL}/profile/preferences`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({
+                    genderPref: preferences.genderPref,
+                    genderPrefs: preferences.genderPrefs ?? [],
+                    minAge: preferences.minAge,
+                    maxAge: preferences.maxAge,
+                    minHeight: preferences.minHeight,
+                    maxHeight: preferences.maxHeight,
+                    religionPref: preferences.religionPref,
+                    ethnicityPref: preferences.ethnicityPref,
+                    politicalPref: preferences.politicalPref,
+                    childrenPref: preferences.childrenPref,
+                    datingGoalPref: preferences.datingGoalPref,
+                    activityPref: preferences.activityPref,
+                    familyOrientedPref: preferences.familyOrientedPref,
+                }),
+            });
+            const prefData = await prefRes.json().catch(() => ({}));
+            if (!prefRes.ok) {
+                setError(prefData.error || "Failed to save preferences.");
+                return;
+            }
+            await refreshAuthProfile();
+            await refreshMatches();
+            navigate("/matching");
+        } catch {
+            setError("Could not connect to server. Please try again.");
+        }
     };
 
     return (
@@ -65,11 +101,14 @@ function Preferences() {
                     <h5 className="section-title">Basic Preferences</h5>
 
                     <div className="mb-3">
-                        <label>Gender Preference <span className="text-danger">*</span></label>
-                        <ToggleGroup
-                            options={["Male", "Female", "Non-binary", "No preference"]}
-                            value={preferences.genderPref}
-                            onChange={(v) => update("genderPref", v)}
+                        <label>Partner gender (pick one or more types, or Open to all genders)</label>
+                        <PartnerGenderPrefs
+                            genderPrefs={preferences.genderPrefs || []}
+                            onChange={(next) => setPreferences((prev) => ({
+                                ...prev,
+                                genderPrefs: next,
+                                genderPref: next.length === 0 ? "No preference" : next.length === 1 ? next[0] : "Multiple",
+                            }))}
                         />
                     </div>
 

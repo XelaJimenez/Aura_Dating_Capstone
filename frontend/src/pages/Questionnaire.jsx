@@ -1,6 +1,8 @@
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
 import { useState } from "react";
+import { API_BASE_URL } from "../config/api";
+import { buildProfileSaveRequestBody } from "../utils/profileSaveBody";
 
 function ToggleGroup({ options, value, onChange }) {
     return (
@@ -21,7 +23,7 @@ function ToggleGroup({ options, value, onChange }) {
 
 function Questionnaire() {
     const navigate = useNavigate();
-    const { profile, setProfile } = useUser();
+    const { profile, setProfile, token, currentUser, refreshAuthProfile } = useUser();
     const update = (field, value) => setProfile((prev) => ({ ...prev, [field]: value }));
 
     const inchesToDisplay = (inches) => {
@@ -32,14 +34,33 @@ function Questionnaire() {
 
     const [error, setError] = useState("");
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         if (!profile.religion || !profile.datingGoal || !profile.personality || !profile.gender) {
             setError("Please fill in all required fields.");
             return;
         }
+        if (!token || !currentUser?.user_id) {
+            setError("You must be logged in to continue.");
+            return;
+        }
         setError("");
-        navigate("/preferences");
+        try {
+            const profileRes = await fetch(`${API_BASE_URL}/profile/save`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify(buildProfileSaveRequestBody(profile)),
+            });
+            const profileData = await profileRes.json().catch(() => ({}));
+            if (!profileRes.ok) {
+                setError(profileData.error || "Failed to save profile.");
+                return;
+            }
+            await refreshAuthProfile();
+            navigate("/preferences");
+        } catch {
+            setError("Could not connect to server. Please try again.");
+        }
     };
 
     return (

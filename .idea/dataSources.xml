@@ -8,5 +8,12 @@
       <jdbc-url>jdbc:postgresql://crossover.proxy.rlwy.net:34976/railway</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
+    <data-source source="LOCAL" name="railway@crossover.proxy.rlwy.net [2]" uuid="a224360b-f574-4ab8-aa38-60ca55738c36">
+      <driver-ref>postgresql</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.postgresql.Driver</jdbc-driver>
+      <jdbc-url>jdbc:postgresql://crossover.proxy.rlwy.net:34976/railway</jdbc-url>
+      <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
   </component>
 </project>

@@ -1,6 +1,22 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
+import { API_BASE_URL } from "../config/api";
+
+function locationFieldError(loc) {
+    const t = (loc || "").trim();
+    if (!t) return "Location is required.";
+    const parts = t.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length < 2) {
+        return "Enter city and state (e.g. Chicago, IL). City or state alone is not enough.";
+    }
+    const city = parts[0];
+    const state = parts.slice(1).join(", ").trim();
+    if (!city || !state) {
+        return "Enter city and state (e.g. Chicago, IL). Both parts are required.";
+    }
+    return null;
+}
 
 function Signup() {
     const navigate = useNavigate();
@@ -29,7 +45,8 @@ function Signup() {
 
         if (!firstName.trim()) { setError("First name is required."); return; }
         if (!lastName.trim())  { setError("Last name is required."); return; }
-        if (!location.trim())  { setError("Location is required."); return; }
+        const locErr = locationFieldError(location);
+        if (locErr) { setError(locErr); return; }
         if (!dob.trim())       { setError("Date of birth is required."); return; }
 
         const dobRegex = /^(0[1-9]|1[0-2])\/(0[1-9]|[12]\d|3[01])\/\d{4}$/;
@@ -49,7 +66,7 @@ function Signup() {
         setLoading(true);
 
         try {
-            const res = await fetch("https://aura-backend-ysqh.onrender.com/auth/signup", {
+            const res = await fetch(`${API_BASE_URL}/auth/signup`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ firstName, lastName, location, age, email, password }),
@@ -100,10 +117,11 @@ function Signup() {
                         />
                     </div>
                     <div className="mb-3 text-start">
-                        <label>Location:</label>
+                        <label>Location <span className="text-muted location-hint">(City, State — e.g. Chicago, IL)</span></label>
                         <input
                             type="text"
                             className="form-control custom-input bg-light"
+                            placeholder="Chicago, IL"
                             value={location}
                             onChange={(e) => setLocation(e.target.value)}
                         />
