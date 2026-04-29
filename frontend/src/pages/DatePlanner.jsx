@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import AuraPlusHint from "../components/AuraPlusHint";
@@ -20,6 +20,31 @@ const TIME_SLOTS = [
     { label: "Sunday 12PM – 5PM",   day: "sunday",   start: "12:00", end: "17:00" },
     { label: "Sunday 6PM – 9PM",    day: "sunday",   start: "18:00", end: "21:00" },
 ];
+
+function timeToMinutes(t) {
+    if (!t) return null;
+    const s = String(t).trim();
+    const m = s.match(/^(\d{2}):(\d{2})/);
+    if (!m) return null;
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    return hh * 60 + mm;
+}
+
+function slotIsUnavailable(slot, rows) {
+    if (!slot || !Array.isArray(rows) || rows.length === 0) return false;
+    const slotStart = timeToMinutes(slot.start);
+    if (slotStart == null) return false;
+    return rows.some((r) => {
+        if (!r || r.day_of_week !== slot.day) return false;
+        const start = timeToMinutes(r.start_time);
+        const end = timeToMinutes(r.end_time);
+        if (start == null || end == null) return false;
+        // Backend checkAvailability blocks if start_time <= time < end_time.
+        return start <= slotStart && slotStart < end;
+    });
+}
 
 function VenueMap({ venues, selectedVenue, onSelect }) {
     const mapRef     = useRef(null);
@@ -84,11 +109,60 @@ function DatePlanner() {
     const [sent,  setSent]  = useState(false);
     const [error, setError] = useState("");
     const [dateLimitAuraPlus, setDateLimitAuraPlus] = useState(false);
+    const [availabilityLoading, setAvailabilityLoading] = useState(false);
+    const [selfUnavailableRows, setSelfUnavailableRows] = useState([]);
+    const [otherUnavailableRows, setOtherUnavailableRows] = useState([]);
 
     useEffect(() => {
         setError("");
         setDateLimitAuraPlus(false);
     }, [selectedVenue, selectedSlot]);
+
+    useEffect(() => {
+        const matchId = match?.match_id != null ? Number(match.match_id) : null;
+        if (!token || matchId == null || Number.isNaN(matchId)) return;
+        let cancelled = false;
+        setAvailabilityLoading(true);
+        fetch(`${API_BASE_URL}/dates/match-availability/${matchId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((r) => r.json())
+            .then((data) => {
+                if (cancelled) return;
+                setSelfUnavailableRows(Array.isArray(data.self_unavailable) ? data.self_unavailable : []);
+                setOtherUnavailableRows(Array.isArray(data.other_unavailable) ? data.other_unavailable : []);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setSelfUnavailableRows([]);
+                setOtherUnavailableRows([]);
+            })
+            .finally(() => {
+                if (!cancelled) setAvailabilityLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [match?.match_id, token]);
+
+    const slotBlockInfo = useMemo(() => {
+        const info = new Map();
+        for (const slot of TIME_SLOTS) {
+            const meBlocked = slotIsUnavailable(slot, selfUnavailableRows);
+            const themBlocked = slotIsUnavailable(slot, otherUnavailableRows);
+            info.set(slot.label, {
+                disabled: meBlocked || themBlocked,
+                reason: meBlocked && themBlocked
+                    ? "Both unavailable"
+                    : meBlocked
+                        ? "You marked this unavailable"
+                        : themBlocked
+                            ? `${match?.name || "Your match"} is unavailable`
+                            : "",
+            });
+        }
+        return info;
+    }, [selfUnavailableRows, otherUnavailableRows, match?.name]);
 
     const buildProposedDatetime = (slot) => {
         const days   = { friday: 5, saturday: 6, sunday: 0 };
@@ -109,6 +183,12 @@ function DatePlanner() {
         }
         setError("");
         setDateLimitAuraPlus(false);
+
+        const slotInfo = slotBlockInfo.get(selectedSlot.label);
+        if (slotInfo?.disabled) {
+            setError(slotInfo.reason || "That time slot is not available. Please choose a different slot.");
+            return;
+        }
 
         const proposed_datetime = buildProposedDatetime(selectedSlot);
 
@@ -192,21 +272,48 @@ function DatePlanner() {
                     <h5 className="section-title">Pick a Time</h5>
                     <div className="d-flex flex-column gap-2 mb-4">
                         {TIME_SLOTS.map((slot) => (
-                            <div
-                                key={slot.label}
-                                onClick={() => setSelectedSlot(slot)}
-                                className="d-flex align-items-center gap-2 time-slot-row"
-                            >
-                                <input
-                                    type="radio"
-                                    readOnly
-                                    checked={selectedSlot?.label === slot.label}
-                                    className="form-check-input mt-0 time-slot-radio"
-                                />
-                                <label className="time-slot-label">{slot.label}</label>
-                            </div>
+                            (() => {
+                                const info = slotBlockInfo.get(slot.label) || { disabled: false, reason: "" };
+                                const disabled = info.disabled;
+                                const isSelected = selectedSlot?.label === slot.label;
+                                const rowClass = [
+                                    "d-flex",
+                                    "align-items-center",
+                                    "gap-2",
+                                    "time-slot-row",
+                                    disabled ? "time-slot-row--disabled" : "",
+                                ].filter(Boolean).join(" ");
+                                return (
+                                    <div
+                                        key={slot.label}
+                                        onClick={() => { if (!disabled) setSelectedSlot(slot); }}
+                                        className={rowClass}
+                                        role="button"
+                                        aria-disabled={disabled}
+                                        title={disabled ? info.reason : ""}
+                                    >
+                                        <input
+                                            type="radio"
+                                            readOnly
+                                            checked={isSelected}
+                                            className="form-check-input mt-0 time-slot-radio"
+                                            disabled={disabled}
+                                        />
+                                        <label className={`time-slot-label ${disabled ? "text-muted" : ""}`}>
+                                            {slot.label}
+                                            {disabled && info.reason ? (
+                                                <span className="ms-2 small text-muted">({info.reason})</span>
+                                            ) : null}
+                                        </label>
+                                    </div>
+                                );
+                            })()
                         ))}
                     </div>
+
+                    {availabilityLoading && match && (
+                        <p className="text-muted small mb-3">Checking availability…</p>
+                    )}
 
                     {error && <p className="text-danger small mb-2">{error}</p>}
                     {dateLimitAuraPlus && <AuraPlusHint className="mb-3 text-start" />}

@@ -23,14 +23,32 @@ function surveyTriggerAtSql() {
     return "NOW()";
 }
 
+
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Chicago";
+
 function getDayOfWeek(isoString) {
-    const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-    return days[new Date(isoString).getDay()];
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return null;
+    return new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        timeZone: APP_TIMEZONE,
+    })
+        .format(d)
+        .toLowerCase();
 }
 
 function getTimeString(isoString) {
     const d = new Date(isoString);
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:00`;
+    if (Number.isNaN(d.getTime())) return null;
+    const parts = new Intl.DateTimeFormat("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: APP_TIMEZONE,
+    }).formatToParts(d);
+    const hh = parts.find((p) => p.type === "hour")?.value ?? "00";
+    const mm = parts.find((p) => p.type === "minute")?.value ?? "00";
+    return `${hh}:${mm}:00`;
 }
 
 async function checkAvailability(userId, dayOfWeek, timeStr) {
@@ -168,6 +186,9 @@ exports.sendDateRequest = async (req, res) => {
 
         const dayOfWeek = getDayOfWeek(proposed_datetime);
         const timeStr   = getTimeString(proposed_datetime);
+        if (!dayOfWeek || !timeStr) {
+            return res.status(400).json({ error: "Invalid proposed_datetime." });
+        }
 
         const senderUnavailable = await checkAvailability(jwtUserId, dayOfWeek, timeStr);
         if (senderUnavailable) {
@@ -200,7 +221,7 @@ exports.sendDateRequest = async (req, res) => {
         const scheduleResult = await pool.query(
             `INSERT INTO date_scheduling (match_id, proposed_datetime, venue_type, venue_name, status, created_at)
              VALUES ($1, $2, $3, $4, 'pending', NOW())
-             RETURNING schedule_id`,
+                 RETURNING schedule_id`,
             [match_id, proposed_datetime, venue_type, venue_name || null]
         );
         const schedule_id = scheduleResult.rows[0].schedule_id;
@@ -218,7 +239,7 @@ exports.sendDateRequest = async (req, res) => {
         const msgInsert = await pool.query(
             `INSERT INTO message (match_id, sender_id, content, sent_at)
              VALUES ($1, $2, $3, NOW())
-             RETURNING message_id, match_id, sender_id, content, sent_at`,
+                 RETURNING message_id, match_id, sender_id, content, sent_at`,
             [match_id, sender_id, chatLine]
         );
         emitNewChatMessage(match_id, msgInsert.rows[0]);
@@ -265,7 +286,7 @@ exports.respondToDate = async (req, res) => {
                      WHERE type = 'date_request' AND (payload->>'schedule_id')::int = ds.schedule_id
                      LIMIT 1) AS requester_id
              FROM date_scheduling ds
-             JOIN matches m ON m.match_id = ds.match_id
+                 JOIN matches m ON m.match_id = ds.match_id
              WHERE ds.schedule_id = $1`,
             [sid]
         );
@@ -288,6 +309,9 @@ exports.respondToDate = async (req, res) => {
         if (response === "approved" && requesterId != null) {
             const dayOfWeek = getDayOfWeek(pr.proposed_datetime);
             const timeStr   = getTimeString(pr.proposed_datetime);
+            if (!dayOfWeek || !timeStr) {
+                return res.status(400).json({ error: "Invalid proposed_datetime on schedule." });
+            }
             const senderNowUnavailable = await checkAvailability(requesterId, dayOfWeek, timeStr);
 
             if (senderNowUnavailable) {
@@ -310,7 +334,7 @@ exports.respondToDate = async (req, res) => {
                 const msgInsert = await pool.query(
                     `INSERT INTO message (match_id, sender_id, content, sent_at)
                      VALUES ($1, $2, $3, NOW())
-                     RETURNING message_id, match_id, sender_id, content, sent_at`,
+                         RETURNING message_id, match_id, sender_id, content, sent_at`,
                     [pr.match_id, responderId, chatLine]
                 );
                 emitNewChatMessage(pr.match_id, msgInsert.rows[0]);
@@ -337,7 +361,7 @@ exports.respondToDate = async (req, res) => {
         const result = await pool.query(
             `UPDATE date_scheduling SET status = $1
              WHERE schedule_id = $2 AND status = 'pending'
-             RETURNING match_id, proposed_datetime, venue_name`,
+                 RETURNING match_id, proposed_datetime, venue_name`,
             [response, sid]
         );
 
@@ -371,7 +395,7 @@ exports.respondToDate = async (req, res) => {
         const msgInsert = await pool.query(
             `INSERT INTO message (match_id, sender_id, content, sent_at)
              VALUES ($1, $2, $3, NOW())
-             RETURNING message_id, match_id, sender_id, content, sent_at`,
+                 RETURNING message_id, match_id, sender_id, content, sent_at`,
             [match_id, responderId, chatLine]
         );
         emitNewChatMessage(match_id, msgInsert.rows[0]);
@@ -386,7 +410,7 @@ exports.respondToDate = async (req, res) => {
                 `INSERT INTO survey_trigger (schedule_id, user1_id, user2_id, trigger_at, sent, created_at)
                  SELECT $1, $2, $3, ${surveyTriggerAtSql()}, false, NOW()
                  FROM date_scheduling WHERE schedule_id = $1
-                 ON CONFLICT (schedule_id) DO NOTHING`,
+                     ON CONFLICT (schedule_id) DO NOTHING`,
                 [sid, u1, u2]
             );
             await runSurveyTriggers();
@@ -531,11 +555,11 @@ exports.submitPostDateSurvey = async (req, res) => {
             await client.query("BEGIN");
             const insertResult = await client.query(
                 `INSERT INTO post_date_checkin
-                    (schedule_id, reviewer_user_id, reviewed_user_id,
-                     comfort_level, felt_safe, boundaries_respected,
-                     felt_pressured, would_meet_again, short_comment, created_at)
+                 (schedule_id, reviewer_user_id, reviewed_user_id,
+                  comfort_level, felt_safe, boundaries_respected,
+                  felt_pressured, would_meet_again, short_comment, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-                 RETURNING checkin_id`,
+                     RETURNING checkin_id`,
                 [schedule_id, userId, reviewed_user_id, comfort,
                     signals.felt_safe, signals.boundaries_respected, signals.felt_pressured,
                     wouldSeeAgain, shortComment || null]
