@@ -39,6 +39,7 @@ function PostDateSurvey() {
     const [wouldSeeAgain, setWouldSeeAgain] = useState("");
     const [comments, setComments] = useState("");
     const [error, setError] = useState("");
+    const [trustResult, setTrustResult] = useState(null);
 
     useEffect(() => {
         if (!scheduleFromNav || !token) {
@@ -106,11 +107,15 @@ function PostDateSurvey() {
                 setSubmitting(false);
                 return;
             }
+            setTrustResult({
+                internal_delta: data.trust?.internal_delta,
+                label: data.reviewed?.label,
+            });
             setSubmitted(true);
             await refreshAuthProfile?.();
             refreshMatches?.();
             bumpNotificationEpoch?.();
-            setTimeout(() => navigate("/chat"), 1500);
+            setTimeout(() => navigate("/chat"), 10000);
         } catch {
             setError("Network error. Try again.");
         } finally {
@@ -140,11 +145,100 @@ function PostDateSurvey() {
                             <p className="small text-white-50 mb-3">Loading…</p>
                         )}
 
-                        {(alreadySubmitted || submitted) && (
+                        {alreadySubmitted && (
                             <div className="text-center text-success fw-bold mb-3">
-                                {alreadySubmitted
-                                    ? "You already submitted a check-in for this date."
-                                    : "Thanks — your safety check-in was recorded."}
+                                You already submitted a check-in for this date.
+                            </div>
+                        )}
+
+                        {submitted && (
+                            <div className="text-center mb-3">
+                                <p className="text-success fw-bold mb-2">✅ Safety check-in submitted</p>
+                                {trustResult && (
+                                    <div
+                                        className="text-start p-3"
+                                        style={{ background: "#1a1a2e", borderRadius: "8px" }}
+                                    >
+                                        <p className="text-white fw-bold mb-2">Safety score breakdown:</p>
+
+                                        <div className="d-flex justify-content-between text-white small mb-1">
+                                            <span>
+                                                Did you feel safe? <strong>{feltSafe}</strong>
+                                            </span>
+                                            <span
+                                                style={{
+                                                    color: feltSafe === "No" ? "#ff6b6b" : "#51cf66",
+                                                }}
+                                            >
+                                                {feltSafe === "No" ? "-5" : "+2"}
+                                            </span>
+                                        </div>
+
+                                        <div className="d-flex justify-content-between text-white small mb-1">
+                                            <span>
+                                                Boundaries respected? <strong>{boundariesRespected}</strong>
+                                            </span>
+                                            <span
+                                                style={{
+                                                    color:
+                                                        boundariesRespected === "No" ? "#ff6b6b" : "#51cf66",
+                                                }}
+                                            >
+                                                {boundariesRespected === "No" ? "-4" : "+2"}
+                                            </span>
+                                        </div>
+
+                                        <div className="d-flex justify-content-between text-white small mb-1">
+                                            <span>
+                                                Felt pressured? <strong>{feltPressured}</strong>
+                                            </span>
+                                            <span
+                                                style={{
+                                                    color: feltPressured === "Yes" ? "#ff6b6b" : "#51cf66",
+                                                }}
+                                            >
+                                                {feltPressured === "Yes" ? "-3" : "0"}
+                                            </span>
+                                        </div>
+
+                                        <div className="d-flex justify-content-between text-white small mb-1">
+                                            <span>
+                                                Comfort level: <strong>{comfortScore}/5</strong>
+                                            </span>
+                                            <span
+                                                style={{
+                                                    color: comfortScore >= 4 ? "#51cf66" : "#aaa",
+                                                }}
+                                            >
+                                                {comfortScore >= 4 ? "+1" : "0"}
+                                            </span>
+                                        </div>
+
+                                        <hr style={{ borderColor: "#444" }} />
+
+                                        <div className="d-flex justify-content-between text-white fw-bold">
+                                            <span>Total impact this date</span>
+                                            <span
+                                                style={{
+                                                    color:
+                                                        trustResult.internal_delta < 0
+                                                            ? "#ff6b6b"
+                                                            : "#51cf66",
+                                                }}
+                                            >
+                                                {trustResult.internal_delta > 0 ? "+" : ""}
+                                                {trustResult.internal_delta}
+                                            </span>
+                                        </div>
+
+                                        {trustResult.label && (
+                                            <p className="text-white-50 small mt-2 mb-0 text-center">
+                                                Updated rating:{" "}
+                                                <strong className="text-white">{trustResult.label}</strong>
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         )}
 
