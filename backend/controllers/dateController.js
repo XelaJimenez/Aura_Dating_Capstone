@@ -19,7 +19,6 @@ function surveyTriggerAtSql() {
         || process.env.POST_DATE_SURVEY_RELAXED_TIMING === "1";
     if (forceStrict) return "proposed_datetime + interval '2 hours' + interval '1 minute'";
     if (forceRelaxed) return "NOW()";
-    if (process.env.NODE_ENV === "production") return "proposed_datetime + interval '2 hours' + interval '1 minute'";
     return "NOW()";
 }
 
@@ -305,7 +304,6 @@ exports.respondToDate = async (req, res) => {
 
         const other_user_id = responderId === u1 ? u2 : u1;
 
-        // ── If accepting, check if sender is now unavailable ──────────────
         if (response === "approved" && requesterId != null) {
             const dayOfWeek = getDayOfWeek(pr.proposed_datetime);
             const timeStr   = getTimeString(pr.proposed_datetime);
@@ -435,6 +433,7 @@ exports.getNotifications = async (req, res) => {
     if (Number.isNaN(userId) || userId !== jwtId) return res.status(403).json({ error: "Forbidden." });
 
     try {
+        await runSurveyTriggers().catch(() => {});
         const result = await pool.query(
             `SELECT notification_id, type, payload, is_read, created_at
              FROM notifications WHERE user_id = $1
